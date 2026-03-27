@@ -55,14 +55,18 @@ from typing import Any, List, Optional
 
 from mutagen._file import File as MutagenFile
 
-from PySide6.QtCore import Qt, QObject, Signal, QUrl, QPoint
+from PySide6.QtCore import Qt, QObject, Signal, QUrl, QPoint, QSize, QRect
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
+    QColor,
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
     QFont,
+    QIcon,
+    QPainter,
+    QPixmap,
     QShortcut,
     QKeySequence,
 )
@@ -781,19 +785,24 @@ class MainWindow(QMainWindow):
         top.setSpacing(4)
 
         self.btn_prev = QToolButton()
-        self.btn_prev.setText("<")
+        self.btn_prev.setIcon(self._create_prev_icon())
+        self.btn_prev.setIconSize(QSize(14, 14))
 
         self.btn_play = QToolButton()
-        self.btn_play.setText("▶")
+        self.btn_play.setIcon(self._create_play_icon())
+        self.btn_play.setIconSize(QSize(14, 14))
 
         self.btn_pause = QToolButton()
-        self.btn_pause.setText("❙❙")
+        self.btn_pause.setIcon(self._create_pause_icon())
+        self.btn_pause.setIconSize(QSize(14, 14))
 
         self.btn_stop = QToolButton()
-        self.btn_stop.setText("■")
+        self.btn_stop.setIcon(self._create_stop_icon())
+        self.btn_stop.setIconSize(QSize(14, 14))
 
         self.btn_next = QToolButton()
-        self.btn_next.setText(">")
+        self.btn_next.setIcon(self._create_next_icon())
+        self.btn_next.setIconSize(QSize(14, 14))
 
         self.cmb_mode = QComboBox()
         self.cmb_mode.setFixedHeight(24)
@@ -816,10 +825,10 @@ class MainWindow(QMainWindow):
         self.cmb_device.setMinimumWidth(60)
         self.sld_volume.setFixedWidth(80)
 
-        top.addWidget(self.btn_prev)
         top.addWidget(self.btn_play)
         top.addWidget(self.btn_pause)
         top.addWidget(self.btn_stop)
+        top.addWidget(self.btn_prev)
         top.addWidget(self.btn_next)
         top.addSpacing(4)
         top.addWidget(QLabel("Order:"))
@@ -1015,7 +1024,7 @@ class MainWindow(QMainWindow):
         for btn in (self.btn_prev, self.btn_play, self.btn_pause, self.btn_stop, self.btn_next):
             btn.setAutoRaise(True)
             btn.setFixedSize(24, 24)
-            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
 
         self.setStyleSheet("""
             QToolButton {
@@ -1038,6 +1047,70 @@ class MainWindow(QMainWindow):
                 background: white;
             }
         """)
+
+    def _create_play_icon(self) -> QIcon:
+        px = QPixmap(32, 32)
+        px.fill(QColor(0, 0, 0, 0))
+        p = QPainter(px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(0, 0, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        from PySide6.QtGui import QPolygon
+        from PySide6.QtCore import QPoint as QP
+        p.drawPolygon(QPolygon([QP(6, 3), QP(28, 16), QP(6, 29)]))
+        p.end()
+        return QIcon(px)
+
+    def _create_pause_icon(self) -> QIcon:
+        px = QPixmap(32, 32)
+        px.fill(QColor(0, 0, 0, 0))
+        p = QPainter(px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(0, 0, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(QRect(6, 4, 7, 24))
+        p.drawRect(QRect(19, 4, 7, 24))
+        p.end()
+        return QIcon(px)
+
+    def _create_prev_icon(self) -> QIcon:
+        px = QPixmap(32, 32)
+        px.fill(QColor(0, 0, 0, 0))
+        p = QPainter(px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(0, 0, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(QRect(3, 4, 5, 24))
+        from PySide6.QtGui import QPolygon
+        from PySide6.QtCore import QPoint as QP
+        p.drawPolygon(QPolygon([QP(28, 3), QP(10, 16), QP(28, 29)]))
+        p.end()
+        return QIcon(px)
+
+    def _create_next_icon(self) -> QIcon:
+        px = QPixmap(32, 32)
+        px.fill(QColor(0, 0, 0, 0))
+        p = QPainter(px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(0, 0, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        from PySide6.QtGui import QPolygon
+        from PySide6.QtCore import QPoint as QP
+        p.drawPolygon(QPolygon([QP(4, 3), QP(22, 16), QP(4, 29)]))
+        p.drawRect(QRect(24, 4, 5, 24))
+        p.end()
+        return QIcon(px)
+
+    def _create_stop_icon(self) -> QIcon:
+        px = QPixmap(32, 32)
+        px.fill(QColor(0, 0, 0, 0))
+        p = QPainter(px)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(0, 0, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(QRect(4, 4, 24, 24))
+        p.end()
+        return QIcon(px)
 
     def _set_tray_icon(self, pixmap: QStyle.StandardPixmap) -> None:
         if self.tray is None:
@@ -1109,7 +1182,9 @@ class MainWindow(QMainWindow):
         self.tray.show()
 
     def on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self.toggle_play_pause()
+        elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.show_from_tray()
 
     def show_from_tray(self) -> None:
@@ -1178,6 +1253,13 @@ class MainWindow(QMainWindow):
 
     def _set_status(self, text: str) -> None:
         self.lbl_status.setText(text)
+        if self.tray is not None:
+            if text == "재생":
+                self._set_tray_icon(QStyle.StandardPixmap.SP_MediaPlay)
+            elif text == "일시정지":
+                self._set_tray_icon(QStyle.StandardPixmap.SP_MediaPause)
+            elif text == "정지":
+                self._set_tray_icon(QStyle.StandardPixmap.SP_MediaStop)
 
     def _save_settings(self) -> None:
         if getattr(self, "_restoring", False):
