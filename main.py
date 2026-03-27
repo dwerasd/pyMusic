@@ -55,7 +55,7 @@ from typing import Any, List, Optional
 
 from mutagen._file import File as MutagenFile
 
-from PySide6.QtCore import Qt, QObject, Signal, QUrl, QPoint, QSize, QRect
+from PySide6.QtCore import Qt, QObject, Signal, QUrl, QPoint, QSize, QRect, QTimer
 from PySide6.QtGui import (
     QAction,
     QCloseEvent,
@@ -1183,8 +1183,14 @@ class MainWindow(QMainWindow):
 
     def on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
-            self.toggle_play_pause()
+            if not hasattr(self, "_tray_click_timer"):
+                self._tray_click_timer = QTimer(self)
+                self._tray_click_timer.setSingleShot(True)
+                self._tray_click_timer.timeout.connect(self.toggle_play_pause)
+            self._tray_click_timer.start(300)
         elif reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            if hasattr(self, "_tray_click_timer"):
+                self._tray_click_timer.stop()
             self.show_from_tray()
 
     def show_from_tray(self) -> None:
