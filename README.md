@@ -2,6 +2,8 @@
 
 PySide6 기반 심플 음악 플레이어
 
+![실행 스샷](image/demo.png)
+
 ## 기능
 
 - 오디오 재생 (mp3, flac, wav, ogg, opus, m4a, aac, wma, webm)
