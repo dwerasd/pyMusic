@@ -315,6 +315,8 @@ class AudioEngine(QObject):
     position_changed = Signal(int)
     duration_changed = Signal(int)
     error_text = Signal(str)
+    # 출력장치 목록 변화·자동 재결속 통지. 인자 = 상태 문구(재결속이 없었으면 빈 문자열).
+    outputs_changed = Signal(str)
 
     def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
@@ -327,6 +329,22 @@ class AudioEngine(QObject):
         self._pause_after_load = False
         self._seek_after_load = 0
 
+        # 사용자가 고른 출력장치 이름(description). RDP 재접속처럼 장치가 사라졌다 다른
+        # 엔드포인트 ID 로 돌아오는 경우 이 이름으로 다시 찾아 결속한다(ID 는 고정이 아니다).
+        self._preferred_desc = ""
+        # 결속 장치가 소실됐는데 대체 장치도 없어 끊긴 상태. 같은 ID 로 돌아오면
+        # setDevice 가 무시되므로(Qt 조기 반환) 재생 파이프라인을 재기동해야 한다.
+        self._bound_lost = False
+        # 장치 추가/제거 알림은 QMediaDevices 인스턴스가 살아 있어야 받는다.
+        self._media_devices = QMediaDevices(self)
+        self._media_devices.audioOutputsChanged.connect(self._on_audio_outputs_changed)
+        # 알림은 한 사건에 여러 번 몰려온다(실측 8회). 재결속은 즉시 하고 UI 통지만 모아서 1회 보낸다.
+        self._pending_reason = ""
+        self._outputs_notify = QTimer(self)
+        self._outputs_notify.setSingleShot(True)
+        self._outputs_notify.setInterval(100)
+        self._outputs_notify.timeout.connect(self._emit_outputs_changed)
+
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
         self.player.positionChanged.connect(lambda p: self.position_changed.emit(int(p)))
         self.player.durationChanged.connect(lambda d: self.duration_changed.emit(int(d)))
@@ -335,10 +353,13 @@ class AudioEngine(QObject):
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             self.track_finished.emit()
-        elif status == QMediaPlayer.MediaStatus.BufferedMedia and self._seek_after_load > 0:
+        elif status == QMediaPlayer.MediaStatus.BufferedMedia and (
+            self._seek_after_load > 0 or self._pause_after_load
+        ):
             pos = self._seek_after_load
             self._seek_after_load = 0
-            self.player.setPosition(pos)
+            if pos > 0:
+                self.player.setPosition(pos)
             if self._pause_after_load:
                 self._pause_after_load = False
                 self.player.pause()
@@ -350,32 +371,130 @@ class AudioEngine(QObject):
     def available_output_devices(self) -> List[QAudioDevice]:
         return list(QMediaDevices.audioOutputs())
 
+    def current_device(self) -> QAudioDevice:
+        return self.audio_output.device()
+
+    @property
+    def preferred_device_description(self) -> str:
+        return self._preferred_desc
+
+    def set_preferred_device_description(self, description: str) -> None:
+        """설정에서 복원한 선호 장치 이름. 지금 목록에 없어도 나중에 나타나면 자동 결속한다."""
+        self._preferred_desc = description
+
     def set_audio_device(self, device: QAudioDevice) -> None:
+        """사용자 선택: 선호 장치로 기억하고 즉시 결속한다."""
+        self._preferred_desc = device.description()
+        self._sync_output_device()
+
+    def bind_device(self, device: QAudioDevice) -> None:
+        """선호 장치 기억 없이 결속만 한다(UI 폴백용 — 사용자 선택이 아니다)."""
+        self._bind(device)
+
+    def _on_audio_outputs_changed(self) -> None:
+        reason = self._sync_output_device()
+        if reason:
+            self._pending_reason = reason
+        self._outputs_notify.start()
+
+    def _emit_outputs_changed(self) -> None:
+        reason, self._pending_reason = self._pending_reason, ""
+        self.outputs_changed.emit(reason)
+
+    def _sync_before_play(self, allow_restart: bool, force_play: bool = False) -> None:
+        # 알림을 놓쳤어도 재생 시작 시점에 한 번 더 장치 생존을 확인한다.
+        reason = self._sync_output_device(allow_restart, force_play)
+        if reason:
+            self.outputs_changed.emit(reason)
+
+    def _sync_output_device(self, allow_restart: bool = True, force_play: bool = False) -> str:
+        """장치 목록 기준으로 결속 장치를 재계산한다.
+        우선순위: 선호 장치(이름 일치) > 현재 장치(살아 있으면 유지) > 기본 장치.
+        allow_restart=False 면 같은 ID 복귀 시 재생 재기동을 생략한다(직후 setSource 가 대신한다).
+        force_play=True 면 재기동 결과를 일시정지가 아니라 재생 상태로 맞춘다(재개 호출용).
+        반환 = 사용자에게 보일 상태 문구(변화 없으면 빈 문자열)."""
+        outputs = self.available_output_devices()
+        cur_id = bytes(self.audio_output.device().id())
+        cur_alive = any(bytes(d.id()) == cur_id for d in outputs)
+
+        target: Optional[QAudioDevice] = None
+        if self._preferred_desc:
+            for d in outputs:
+                if d.description() == self._preferred_desc:
+                    target = d
+                    break
+
+        if target is None:
+            if cur_alive:
+                return self._recover_same_id(allow_restart, force_play) if self._bound_lost else ""
+            target = QMediaDevices.defaultAudioOutput()
+            if target.isNull():
+                self._bound_lost = True
+                return "출력장치 없음: 장치가 연결되면 자동으로 다시 잡습니다."
+            self._bind(target)
+            return f"출력장치 소실 → 기본 장치로 전환: {target.description()}"
+
+        if bytes(target.id()) != cur_id:
+            self._bind(target)
+            return f"출력장치 전환: {target.description()}"
+        if self._bound_lost:
+            return self._recover_same_id(allow_restart, force_play)
+        return ""
+
+    def _bind(self, device: QAudioDevice) -> None:
+        # 다른 ID 면 재생 중에도 Qt 가 deviceChanged 로 오디오 싱크를 새로 만든다.
         self.audio_output.setDevice(device)
+        self._bound_lost = False
+
+    def _recover_same_id(self, allow_restart: bool, force_play: bool) -> str:
+        self._bound_lost = False
+        if allow_restart:
+            self._restart_pipeline(force_play)
+        return f"출력장치 재연결: {self.audio_output.device().description()}"
+
+    def _restart_pipeline(self, force_play: bool) -> None:
+        """재생 중 같은 ID 로 돌아온 장치는 setDevice 가 무시되므로 정지→재로드로 싱크를 다시 만든다."""
+        state = self.player.playbackState()
+        src = self.player.source()
+        if state == QMediaPlayer.PlaybackState.StoppedState or not src.isLocalFile():
+            return
+        # 로드 직후(BufferedMedia 전)라면 아직 적용되지 않은 일시정지/탐색 의도가 플래그에만 있다.
+        pending_pause = self._pause_after_load
+        pos = self._seek_after_load if self._seek_after_load > 0 else self.player.position()
+        self.player.stop()
+        want_pause = (pending_pause or state == QMediaPlayer.PlaybackState.PausedState) and not force_play
+        if want_pause:
+            self.load_file_paused(src.toLocalFile(), pos)
+        else:
+            self.play_file_at(src.toLocalFile(), pos)
 
     def set_volume_0_100(self, value: int) -> None:
         value = max(0, min(100, int(value)))
         self.audio_output.setVolume(value / 100.0)
 
     def play_file(self, path: str) -> None:
+        self._sync_before_play(allow_restart=False)
         self._pause_after_load = False
         self._seek_after_load = 0
         self.player.setSource(QUrl.fromLocalFile(path))
         self.player.play()
 
     def play_file_at(self, path: str, position_ms: int = 0) -> None:
+        self._sync_before_play(allow_restart=False)
         self._pause_after_load = False
         self._seek_after_load = max(0, position_ms)
         self.player.setSource(QUrl.fromLocalFile(path))
         self.player.play()
 
     def load_file_paused(self, path: str, position_ms: int = 0) -> None:
+        self._sync_before_play(allow_restart=False)
         self._pause_after_load = True
         self._seek_after_load = max(0, position_ms)
         self.player.setSource(QUrl.fromLocalFile(path))
         self.player.play()
 
     def play(self) -> None:
+        self._sync_before_play(allow_restart=True, force_play=True)
         self.player.play()
 
     def pause(self) -> None:
@@ -757,6 +876,7 @@ class MainWindow(QMainWindow):
         self.engine.position_changed.connect(self._on_position_changed)
         self.engine.duration_changed.connect(self._on_duration_changed)
         self.engine.error_text.connect(self._on_error_text)
+        self.engine.outputs_changed.connect(self._on_engine_outputs_changed)
 
         self._build_ui()
         self._apply_light_ui()
@@ -1306,7 +1426,7 @@ class MainWindow(QMainWindow):
             "volume": self.sld_volume.value(),
             "mode_index": self.cmb_mode.currentIndex(),
             "last_open_dir": self.last_open_dir,
-            "device_name": self.cmb_device.currentText(),
+            "device_name": self.engine.preferred_device_description or self.cmb_device.currentText(),
             "current_track_index": self.controller.current_index if self.controller.current_index is not None else -1,
             "playback_position": self.engine.position(),
             "ab_enabled": self.chk_ab.isChecked(),
@@ -1373,6 +1493,7 @@ class MainWindow(QMainWindow):
 
         saved_device = str(s.get("device_name", ""))
         if saved_device:
+            self.engine.set_preferred_device_description(saved_device)
             for i in range(self.cmb_device.count()):
                 if self.cmb_device.itemText(i) == saved_device:
                     self.cmb_device.setCurrentIndex(i)
@@ -1474,16 +1595,31 @@ class MainWindow(QMainWindow):
             self._set_status(f"재생목록 복원 실패: {e}")
 
     def _load_devices(self) -> None:
-        self.cmb_device.clear()
-        devices = self.engine.available_output_devices()
-        for device in devices:
-            self.cmb_device.addItem(device.description(), device)
+        """출력장치 콤보를 현재 목록으로 다시 채우고 엔진이 결속한 장치를 선택 상태로 맞춘다."""
+        self.cmb_device.blockSignals(True)
+        try:
+            self.cmb_device.clear()
+            bound_id = bytes(self.engine.current_device().id())
+            select = -1
+            for device in self.engine.available_output_devices():
+                self.cmb_device.addItem(device.description(), device)
+                if select < 0 and bytes(device.id()) == bound_id:
+                    select = self.cmb_device.count() - 1
 
-        if self.cmb_device.count() > 0:
-            self.cmb_device.setCurrentIndex(0)
-            data = self.cmb_device.currentData()
-            if isinstance(data, QAudioDevice):
-                self.engine.set_audio_device(data)
+            if self.cmb_device.count() > 0:
+                self.cmb_device.setCurrentIndex(max(select, 0))
+                if select < 0:
+                    data = self.cmb_device.currentData()
+                    if isinstance(data, QAudioDevice):
+                        self.engine.bind_device(data)
+        finally:
+            self.cmb_device.blockSignals(False)
+
+    def _on_engine_outputs_changed(self, reason: str) -> None:
+        self._load_devices()
+        if reason:
+            # 재생 진입 경로 안에서 동기 호출되면 뒤따르는 "재생" 상태 문구가 덮어쓰므로 다음 이벤트 루프 턴에 표시한다.
+            QTimer.singleShot(0, lambda: self._set_status(reason))
 
     def on_device_changed(self, index: int) -> None:
         device = self.cmb_device.itemData(index)
