@@ -111,7 +111,7 @@ APP_ORG = "local"
 LOCAL_SERVER_NAME = "simple_music_player_single_instance_v1"
 
 SUPPORTED_EXTS = {
-    ".mp3", ".flac", ".wav", ".ogg", ".opus", ".m4a", ".aac", ".wma", ".webm"
+    ".mp3", ".flac", ".wav", ".ogg", ".opus", ".m4a", ".aac", ".wma", ".webm", ".mp4"
 }
 
 
@@ -1729,7 +1729,7 @@ class MainWindow(QMainWindow):
             self,
             "음악 파일 선택",
             self.last_open_dir,
-            "Audio Files (*.mp3 *.flac *.wav *.ogg *.opus *.m4a *.aac *.wma *.webm);;All Files (*)"
+            "Audio Files (*.mp3 *.flac *.wav *.ogg *.opus *.m4a *.aac *.wma *.webm *.mp4);;All Files (*)"
         )
         if not paths:
             return
